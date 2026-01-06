@@ -323,7 +323,7 @@ export default function NeighborWatch() {
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>🛡️ NeighborWatch</Text>
+          <Text style={styles.headerTitle}>NeighborWatch</Text>
           <Text style={styles.headerSubtitle}>Lekki Gardens Estate</Text>
         </View>
       </View>
