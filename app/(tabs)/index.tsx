@@ -12,8 +12,14 @@ import {
   Alert,
   RefreshControl,
   ActivityIndicator,
+  Linking,
+  Platform,
 } from 'react-native';
 import { supabase } from '../../supabase/supabase';
+
+const showNotification = (title: string, message: string) => {
+    Alert.alert(title, message, [{ text: 'OK' }]);
+  };
 
 interface Alerts {
   id: number;
@@ -35,6 +41,7 @@ interface Visitor {
   purpose: string;
   status: 'approved' | 'pending' | 'rejected';
   duration: string;
+  vehicle_plate?: string;
   created_at: string;
 }
 
@@ -46,16 +53,28 @@ interface VigilanteGroup {
   contact: string;
 }
 
+interface Comment {
+  id: number;
+  alert_id: number;
+  user_name: string;
+  comment_text: string;
+  created_at: string;
+}
+
 export default function NeighborWatch() {
   const [currentView, setCurrentView] = useState<'feed' | 'visitors' | 'vigilante'>('feed');
   const [showReport, setShowReport] = useState(false);
   const [showVisitorForm, setShowVisitorForm] = useState(false);
+  const [showComments, setShowComments] = useState(false);
+  const [selectedAlert, setSelectedAlert] = useState<Alerts | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-
+  
   const [alerts, setAlerts] = useState<Alerts[]>([]);
   const [visitors, setVisitors] = useState<Visitor[]>([]);
   const [vigilanteGroups, setVigilanteGroups] = useState<VigilanteGroup[]>([]);
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [newComment, setNewComment] = useState('');
 
   const [reportForm, setReportForm] = useState({
     type: 'suspicious' as 'suspicious' | 'emergency' | 'info',
@@ -68,10 +87,13 @@ export default function NeighborWatch() {
     name: '',
     phone: '',
     purpose: '',
-    duration: '2'
+    duration: '2',
+    vehicle_plate: ''
   });
 
-  // Load data on mount
+  const [unreadAlerts, setUnreadAlerts] = useState(0);
+  const [pendingVisitors, setPendingVisitors] = useState(0);
+
   useEffect(() => {
     loadAllData();
     setupRealtimeSubscriptions();
@@ -97,9 +119,10 @@ export default function NeighborWatch() {
 
       if (error) throw error;
       setAlerts(data || []);
+      const activeAlerts = data?.filter(a => a.status === 'active').length || 0;
+      setUnreadAlerts(activeAlerts);
     } catch (error) {
       console.error('Error fetching alerts:', error);
-      Alert.alert('Error', 'Failed to load alerts');
     }
   };
 
@@ -113,9 +136,10 @@ export default function NeighborWatch() {
 
       if (error) throw error;
       setVisitors(data || []);
+      const pending = data?.filter(v => v.status === 'pending').length || 0;
+      setPendingVisitors(pending);
     } catch (error) {
       console.error('Error fetching visitors:', error);
-      Alert.alert('Error', 'Failed to load visitors');
     }
   };
 
@@ -135,96 +159,141 @@ export default function NeighborWatch() {
     }
   };
 
+  const fetchComments = async (alertId: number) => {
+    try {
+      const { data, error } = await supabase
+        .from('comments')
+        .select('*')
+        .eq('alert_id', alertId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setComments(data || []);
+    } catch (error) {
+      console.error('Error fetching comments:', error);
+    }
+  };
+
   // Setup real-time subscriptions
   const setupRealtimeSubscriptions = () => {
-    // Subscribe to alerts changes
-    const alertsSubscription = supabase
+    const alertsChannel = supabase
       .channel('alerts-channel')
       .on('postgres_changes', 
         { event: '*', schema: 'public', table: 'alerts' },
-        () => fetchAlerts()
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            setAlerts(prev => [payload.new as Alerts, ...prev]);
+            showNotification('New Alert!', (payload.new as Alerts).title);
+          } else if (payload.eventType === 'UPDATE') {
+            setAlerts(prev => prev.map(a => 
+              a.id === payload.new.id ? payload.new as Alerts : a
+            ));
+          } else if (payload.eventType === 'DELETE') {
+            setAlerts(prev => prev.filter(a => a.id !== payload.old.id));
+          }
+        }
       )
       .subscribe();
 
-    // Subscribe to visitors changes
-    const visitorsSubscription = supabase
+    // Subscribe to visitors
+    const visitorsChannel = supabase
       .channel('visitors-channel')
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'visitors' },
-        () => fetchVisitors()
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            setVisitors(prev => [payload.new as Visitor, ...prev]);
+            showNotification('New Visitor', `${(payload.new as Visitor).name} registered`);
+          } else if (payload.eventType === 'UPDATE') {
+            setVisitors(prev => prev.map(v => 
+              v.id === payload.new.id ? payload.new as Visitor : v
+            ));
+          }
+        }
       )
       .subscribe();
 
-    // Subscribe to vigilante groups changes
-    const vigilanteSubscription = supabase
+    // Subscribe to vigilante groups
+    const vigilanteChannel = supabase
       .channel('vigilante-channel')
       .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'vigilante_groups' },
+        { event: 'UPDATE', schema: 'public', table: 'vigilante_groups' },
         () => fetchVigilanteGroups()
       )
       .subscribe();
 
     return () => {
-      alertsSubscription.unsubscribe();
-      visitorsSubscription.unsubscribe();
-      vigilanteSubscription.unsubscribe();
+      alertsChannel.unsubscribe();
+      visitorsChannel.unsubscribe();
+      vigilanteChannel.unsubscribe();
     };
   };
 
   const handleSubmitReport = async () => {
-    if (reportForm.title && reportForm.description && reportForm.location) {
-      try {
-        const { error } = await supabase
-          .from('alerts')
-          .insert([{
-            type: reportForm.type,
-            title: reportForm.title,
-            description: reportForm.description,
-            location: reportForm.location,
-            reporter: 'You',
-            status: 'active',
-            comments: 0
-          }]);
+    if (!reportForm.title || !reportForm.description || !reportForm.location) {
+      Alert.alert('Error', 'Please fill in all required fields');
+      return;
+    }
 
-        if (error) throw error;
+    try {
+      const { error } = await supabase
+        .from('alerts')
+        .insert([{
+          type: reportForm.type,
+          title: reportForm.title,
+          description: reportForm.description,
+          location: reportForm.location,
+          reporter: 'You',
+          status: 'active',
+          comments: 0
+        }]);
 
-        setReportForm({ type: 'suspicious', title: '', description: '', location: '' });
-        setShowReport(false);
-        Alert.alert('Success', 'Report submitted successfully!');
-      } catch (error) {
-        console.error('Error submitting report:', error);
-        Alert.alert('Error', 'Failed to submit report');
+      if (error) throw error;
+
+      setReportForm({ type: 'suspicious', title: '', description: '', location: '' });
+      setShowReport(false);
+      Alert.alert('Success', 'Report submitted successfully!');
+      
+      // Notify security if emergency
+      if (reportForm.type === 'emergency') {
+        Alert.alert('Emergency Alert', 'Security teams have been notified!', [
+          { text: 'Call Security Now', onPress: () => callEmergency() },
+          { text: 'OK' }
+        ]);
       }
-    } else {
-      Alert.alert('Error', 'Please fill in all fields');
+    } catch (error) {
+      console.error('Error submitting report:', error);
+      Alert.alert('Error', 'Failed to submit report');
     }
   };
 
-   const handleSubmitVisitor = async () => {
-    if (visitorForm.name && visitorForm.phone && visitorForm.purpose) {
-      try {
-        const { error } = await supabase
-          .from('visitors')
-          .insert([{
-            name: visitorForm.name,
-            phone: visitorForm.phone,
-            host: 'Your House',
-            purpose: visitorForm.purpose,
-            status: 'pending',
-            duration: `${visitorForm.duration} hours`
-          }]);
+  const handleSubmitVisitor = async () => {
+    if (!visitorForm.name || !visitorForm.phone || !visitorForm.purpose) {
+      Alert.alert('Error', 'Please fill in all required fields');
+      return;
+    }
 
-        if (error) throw error;
+    try {
+      const { error } = await supabase
+        .from('visitors')
+        .insert([{
+          name: visitorForm.name,
+          phone: visitorForm.phone,
+          host: 'Your House',
+          purpose: visitorForm.purpose,
+          status: 'pending',
+          duration: `${visitorForm.duration} hours`,
+          vehicle_plate: visitorForm.vehicle_plate || null
+        }]);
 
-        setVisitorForm({ name: '', phone: '', purpose: '', duration: '2' });
-        setShowVisitorForm(false);
-        Alert.alert('Success', 'Visitor registered successfully!');
-      } catch (error) {
-        console.error('Error registering visitor:', error);
-        Alert.alert('Error', 'Failed to register visitor');
-      }
-    } else {
-      Alert.alert('Error', 'Please fill in all fields');
+      if (error) throw error;
+
+      setVisitorForm({ name: '', phone: '', purpose: '', duration: '2', vehicle_plate: '' });
+      setShowVisitorForm(false);
+      Alert.alert('Success', 'Visitor registered successfully!');
+    } catch (error) {
+      console.error('Error registering visitor:', error);
+      Alert.alert('Error', 'Failed to register visitor');
     }
   };
 
@@ -243,7 +312,6 @@ export default function NeighborWatch() {
     }
   };
 
-  // Reject visitor
   const rejectVisitor = async (id: number) => {
     Alert.alert('Confirm', 'Reject this visitor?', [
       { text: 'Cancel', style: 'cancel' },
@@ -266,6 +334,75 @@ export default function NeighborWatch() {
         style: 'destructive'
       }
     ]);
+  };
+
+  const resolveAlert = async (id: number) => {
+    try {
+      const { error } = await supabase
+        .from('alerts')
+        .update({ status: 'resolved' })
+        .eq('id', id);
+
+      if (error) throw error;
+      Alert.alert('Success', 'Alert marked as resolved');
+    } catch (error) {
+      console.error('Error resolving alert:', error);
+      Alert.alert('Error', 'Failed to resolve alert');
+    }
+  };
+
+  const addComment = async () => {
+    if (!newComment.trim() || !selectedAlert) return;
+
+    try {
+      const { error } = await supabase
+        .from('comments')
+        .insert([{
+          alert_id: selectedAlert.id,
+          user_name: 'You',
+          comment_text: newComment.trim()
+        }]);
+
+      if (error) throw error;
+
+      await supabase
+        .from('alerts')
+        .update({ comments: selectedAlert.comments + 1 })
+        .eq('id', selectedAlert.id);
+
+      setNewComment('');
+      fetchComments(selectedAlert.id);
+    } catch (error) {
+      console.error('Error adding comment:', error);
+      Alert.alert('Error', 'Failed to add comment');
+    }
+  };
+
+  const callEmergency = async () => {
+    const emergencyNumber = '0803456789'; //default number
+    try {
+      const supported = await Linking.canOpenURL(`tel:${emergencyNumber}`);
+      if (supported) {
+        await Linking.openURL(`tel:${emergencyNumber}`);
+      } else {
+        Alert.alert('Error', 'Phone calling is not supported on this device');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to open phone dialer');
+    }
+  };
+
+  const callSecurityTeam = async (contact: string) => {
+    try {
+      const supported = await Linking.canOpenURL(`tel:${contact}`);
+      if (supported) {
+        await Linking.openURL(`tel:${contact}`);
+      } else {
+        Alert.alert('Error', 'Phone calling is not supported on this device');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to open phone dialer');
+    }
   };
 
   // Pull to refresh
@@ -304,13 +441,19 @@ export default function NeighborWatch() {
     }
   };
 
+  const openComments = (alert: Alerts) => {
+    setSelectedAlert(alert);
+    fetchComments(alert.id);
+    setShowComments(true);
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#16A34A" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#16A34A" />
-          <Text style={styles.loadingText}>Loading NeighborWatch...</Text>
+          <Text style={styles.loadingText}>Loading Neighbour Watch...</Text>
         </View>
       </SafeAreaView>
     );
@@ -323,9 +466,14 @@ export default function NeighborWatch() {
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>NeighborWatch</Text>
-          <Text style={styles.headerSubtitle}>Lekki Gardens Estate</Text>
+          <Text style={styles.headerTitle}>🛡️ Neighbour Watch</Text>
         </View>
+        <TouchableOpacity 
+          style={styles.emergencyHeaderBtn}
+          onPress={callEmergency}
+        >
+          <Text style={styles.emergencyHeaderText}>🚨 SOS</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Navigation Tabs */}
@@ -334,17 +482,31 @@ export default function NeighborWatch() {
           style={[styles.tab, currentView === 'feed' && styles.tabActive]}
           onPress={() => setCurrentView('feed')}
         >
-          <Text style={[styles.tabText, currentView === 'feed' && styles.tabTextActive]}>
-            🔔 Alerts
-          </Text>
+          <View style={styles.tabContent}>
+            <Text style={[styles.tabText, currentView === 'feed' && styles.tabTextActive]}>
+              🔔 Alerts
+            </Text>
+            {unreadAlerts > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{unreadAlerts}</Text>
+              </View>
+            )}
+          </View>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, currentView === 'visitors' && styles.tabActive]}
           onPress={() => setCurrentView('visitors')}
         >
-          <Text style={[styles.tabText, currentView === 'visitors' && styles.tabTextActive]}>
-            👥 Visitors
-          </Text>
+          <View style={styles.tabContent}>
+            <Text style={[styles.tabText, currentView === 'visitors' && styles.tabTextActive]}>
+              👥 Visitors
+            </Text>
+            {pendingVisitors > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{pendingVisitors}</Text>
+              </View>
+            )}
+          </View>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, currentView === 'vigilante' && styles.tabActive]}
@@ -367,13 +529,14 @@ export default function NeighborWatch() {
         {currentView === 'feed' && (
           <View>
             <View style={styles.locationCard}>
-              <Text style={styles.locationText}>📍 You are in Block C, House 17</Text>
+              <Text style={styles.locationText}>📍 Block C, House 17</Text>
+              <Text style={styles.liveIndicator}>🟢 Live Updates</Text>
             </View>
 
             {alerts.length === 0 ? (
               <View style={styles.emptyState}>
                 <Text style={styles.emptyStateText}>No alerts yet</Text>
-                <Text style={styles.emptyStateSubtext}>Tap the red button to report an incident</Text>
+                <Text style={styles.emptyStateSubtext}>Tap the red button to report</Text>
               </View>
             ) : (
               alerts.map(alert => (
@@ -392,6 +555,22 @@ export default function NeighborWatch() {
                     <Text style={styles.alertMeta}>🕐 {getTimeAgo(alert.created_at)}</Text>
                     <Text style={styles.alertReporter}>By: {alert.reporter}</Text>
                   </View>
+                  <View style={styles.alertActions}>
+                    <TouchableOpacity 
+                      style={styles.actionBtn}
+                      onPress={() => openComments(alert)}
+                    >
+                      <Text style={styles.actionBtnText}>💬 {alert.comments} Comments</Text>
+                    </TouchableOpacity>
+                    {alert.status === 'active' && (
+                      <TouchableOpacity 
+                        style={styles.actionBtn}
+                        onPress={() => resolveAlert(alert.id)}
+                      >
+                        <Text style={styles.actionBtnText}>✓ Mark Resolved</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
               ))
             )}
@@ -403,19 +582,19 @@ export default function NeighborWatch() {
           <View>
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Visitor Management</Text>
-              <Text style={styles.cardSubtitle}>Pre-register visitors for faster gate access</Text>
+              <Text style={styles.cardSubtitle}>Pre-register for faster gate access</Text>
               <TouchableOpacity
                 style={styles.primaryButton}
                 onPress={() => setShowVisitorForm(true)}
               >
-                <Text style={styles.primaryButtonText}>Register New Visitor</Text>
+                <Text style={styles.primaryButtonText}>+ Register New Visitor</Text>
               </TouchableOpacity>
             </View>
 
             {visitors.length === 0 ? (
               <View style={styles.emptyState}>
-                <Text style={styles.emptyStateText}>No visitors registered</Text>
-                <Text style={styles.emptyStateSubtext}>Register visitors for quick gate access</Text>
+                <Text style={styles.emptyStateText}>No visitors</Text>
+                <Text style={styles.emptyStateSubtext}>Register visitors for quick access</Text>
               </View>
             ) : (
               visitors.filter(v => v.status !== 'rejected').map(visitor => (
@@ -423,7 +602,10 @@ export default function NeighborWatch() {
                   <View style={styles.visitorHeader}>
                     <View>
                       <Text style={styles.visitorName}>{visitor.name}</Text>
-                      <Text style={styles.visitorPhone}>{visitor.phone}</Text>
+                      <Text style={styles.visitorPhone}>📞 {visitor.phone}</Text>
+                      {visitor.vehicle_plate && (
+                        <Text style={styles.visitorPhone}>🚗 {visitor.vehicle_plate}</Text>
+                      )}
                     </View>
                     <View style={visitor.status === 'approved' ? styles.statusApproved : styles.statusPending}>
                       <Text style={styles.statusText}>{visitor.status}</Text>
@@ -441,15 +623,23 @@ export default function NeighborWatch() {
                         style={styles.approveButton}
                         onPress={() => approveVisitor(visitor.id)}
                       >
-                        <Text style={styles.approveButtonText}>Approve</Text>
+                        <Text style={styles.approveButtonText}>✓ Approve</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={styles.rejectButton}
                         onPress={() => rejectVisitor(visitor.id)}
                       >
-                        <Text style={styles.rejectButtonText}>Reject</Text>
+                        <Text style={styles.rejectButtonText}>✕ Reject</Text>
                       </TouchableOpacity>
                     </View>
+                  )}
+                  {visitor.status === 'approved' && (
+                    <TouchableOpacity
+                      style={styles.callVisitorBtn}
+                      onPress={() => callSecurityTeam(visitor.phone)}
+                    >
+                      <Text style={styles.callVisitorBtnText}>📞 Call Visitor</Text>
+                    </TouchableOpacity>
                   )}
                 </View>
               ))
@@ -457,40 +647,45 @@ export default function NeighborWatch() {
           </View>
         )}
 
-        {/* Vigilante Groups */}
+        {/* Security Teams */}
         {currentView === 'vigilante' && (
           <View>
             <View style={styles.emergencyCard}>
-              <Text style={styles.emergencyTitle}>Emergency Contact</Text>
-              <Text style={styles.emergencySubtitle}>Tap to call security immediately</Text>
-              <TouchableOpacity style={styles.emergencyButton}>
-                <Text style={styles.emergencyButtonText}>📞 Call Estate Security</Text>
+              <Text style={styles.emergencyTitle}>🚨 Emergency Contact</Text>
+              <Text style={styles.emergencySubtitle}>Immediate security response</Text>
+              <TouchableOpacity 
+                style={styles.emergencyButton}
+                onPress={callEmergency}
+              >
+                <Text style={styles.emergencyButtonText}>📞 CALL SECURITY NOW</Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Security Teams</Text>
-              {vigilanteGroups.length === 0 ? (
-                <Text style={styles.emptyStateSubtext}>No security teams available</Text>
-              ) : (
-                vigilanteGroups.map(group => (
-                  <View key={group.id} style={styles.securityTeam}>
-                    <View style={styles.securityTeamHeader}>
-                      <View>
-                        <Text style={styles.securityTeamName}>{group.name}</Text>
-                        <Text style={styles.securityTeamMembers}>{group.members} members</Text>
-                      </View>
-                      <View style={group.status === 'online' ? styles.statusOnline : styles.statusOffline}>
-                        <Text style={styles.statusDot}>●</Text>
-                        <Text style={styles.statusText}>{group.status}</Text>
-                      </View>
+              <Text style={styles.onlineCount}>
+                {vigilanteGroups.filter(g => g.status === 'online').length} teams online
+              </Text>
+              {vigilanteGroups.map(group => (
+                <View key={group.id} style={styles.securityTeam}>
+                  <View style={styles.securityTeamHeader}>
+                    <View>
+                      <Text style={styles.securityTeamName}>{group.name}</Text>
+                      <Text style={styles.securityTeamMembers}>{group.members} members</Text>
                     </View>
-                    <TouchableOpacity>
-                      <Text style={styles.contactLink}>📞 {group.contact}</Text>
-                    </TouchableOpacity>
+                    <View style={group.status === 'online' ? styles.statusOnline : styles.statusOffline}>
+                      <Text style={styles.statusDot}>●</Text>
+                      <Text style={styles.statusText}>{group.status}</Text>
+                    </View>
                   </View>
-                ))
-              )}
+                  <TouchableOpacity 
+                    style={styles.callButton}
+                    onPress={() => callSecurityTeam(group.contact)}
+                  >
+                    <Text style={styles.callButtonText}>📞 Call {group.contact}</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
             </View>
           </View>
         )}
@@ -507,7 +702,7 @@ export default function NeighborWatch() {
               </TouchableOpacity>
             </View>
             <ScrollView>
-              <Text style={styles.label}>Type</Text>
+              <Text style={styles.label}>Type *</Text>
               <View style={styles.typeButtons}>
                 {(['suspicious', 'emergency', 'info'] as const).map(type => (
                   <TouchableOpacity
@@ -516,13 +711,13 @@ export default function NeighborWatch() {
                     onPress={() => setReportForm({...reportForm, type})}
                   >
                     <Text style={[styles.typeButtonText, reportForm.type === type && styles.typeButtonTextActive]}>
-                      {type}
+                      {type === 'emergency' ? '🚨' : type === 'suspicious' ? '⚠️' : 'ℹ️'} {type}
                     </Text>
                   </TouchableOpacity>
                 ))}
               </View>
 
-              <Text style={styles.label}>Title</Text>
+              <Text style={styles.label}>Title *</Text>
               <TextInput
                 style={styles.input}
                 value={reportForm.title}
@@ -530,7 +725,7 @@ export default function NeighborWatch() {
                 placeholder="Brief description"
               />
 
-              <Text style={styles.label}>Description</Text>
+              <Text style={styles.label}>Description *</Text>
               <TextInput
                 style={[styles.input, styles.textArea]}
                 value={reportForm.description}
@@ -540,7 +735,7 @@ export default function NeighborWatch() {
                 numberOfLines={4}
               />
 
-              <Text style={styles.label}>Location</Text>
+              <Text style={styles.label}>Location *</Text>
               <TextInput
                 style={styles.input}
                 value={reportForm.location}
@@ -567,7 +762,7 @@ export default function NeighborWatch() {
               </TouchableOpacity>
             </View>
             <ScrollView>
-              <Text style={styles.label}>Visitor Name</Text>
+              <Text style={styles.label}>Visitor Name *</Text>
               <TextInput
                 style={styles.input}
                 value={visitorForm.name}
@@ -575,7 +770,7 @@ export default function NeighborWatch() {
                 placeholder="Full name"
               />
 
-              <Text style={styles.label}>Phone Number</Text>
+              <Text style={styles.label}>Phone Number *</Text>
               <TextInput
                 style={styles.input}
                 value={visitorForm.phone}
@@ -584,7 +779,7 @@ export default function NeighborWatch() {
                 keyboardType="phone-pad"
               />
 
-              <Text style={styles.label}>Purpose of Visit</Text>
+              <Text style={styles.label}>Purpose of Visit *</Text>
               <TextInput
                 style={styles.input}
                 value={visitorForm.purpose}
@@ -592,7 +787,16 @@ export default function NeighborWatch() {
                 placeholder="e.g., Guest, Plumber, Delivery"
               />
 
-              <Text style={styles.label}>Expected Duration (hours)</Text>
+              <Text style={styles.label}>Vehicle Plate (Optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={visitorForm.vehicle_plate}
+                onChangeText={(vehicle_plate) => setVisitorForm({...visitorForm, vehicle_plate})}
+                placeholder="e.g., LAG-123-XY"
+                autoCapitalize="characters"
+              />
+
+              <Text style={styles.label}>Duration (hours) *</Text>
               <TextInput
                 style={styles.input}
                 value={visitorForm.duration}
@@ -605,6 +809,48 @@ export default function NeighborWatch() {
                 <Text style={styles.submitButtonText}>Register Visitor</Text>
               </TouchableOpacity>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Comments Modal */}
+      <Modal visible={showComments} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Comments</Text>
+              <TouchableOpacity onPress={() => setShowComments(false)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.commentsScroll}>
+              {comments.length === 0 ? (
+                <Text style={styles.noComments}>No comments yet. Be the first!</Text>
+              ) : (
+                comments.map(comment => (
+                  <View key={comment.id} style={styles.commentCard}>
+                    <Text style={styles.commentUser}>{comment.user_name}</Text>
+                    <Text style={styles.commentText}>{comment.comment_text}</Text>
+                    <Text style={styles.commentTime}>{getTimeAgo(comment.created_at)}</Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <View style={styles.commentInputContainer}>
+              <TextInput
+                style={styles.commentInput}
+                value={newComment}
+                onChangeText={setNewComment}
+                placeholder="Add a comment..."
+                multiline
+              />
+              <TouchableOpacity 
+                style={styles.sendCommentBtn}
+                onPress={addComment}
+              >
+                <Text style={styles.sendCommentText}>Send</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -651,6 +897,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#BBF7D0',
   },
+  emergencyHeaderBtn: {
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  emergencyHeaderText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
   tabContainer: {
     flexDirection: 'row',
     backgroundColor: 'white',
@@ -666,6 +923,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderBottomColor: '#16A34A',
   },
+  tabContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
   tabText: {
     fontSize: 12,
     color: '#6B7280',
@@ -673,6 +935,20 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: '#16A34A',
+    fontWeight: 'bold',
+  },
+  badge: {
+    backgroundColor: '#DC2626',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 5,
+  },
+  badgeText: {
+    color: 'white',
+    fontSize: 10,
     fontWeight: 'bold',
   },
   content: {
@@ -684,10 +960,33 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 8,
     marginBottom: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   locationText: {
     fontSize: 14,
     color: '#6B7280',
+  },
+  liveIndicator: {
+    fontSize: 12,
+    color: '#16A34A',
+    fontWeight: '600',
+  },
+  emptyState: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyStateText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#6B7280',
+    marginBottom: 8,
+  },
+  emptyStateSubtext: {
+    fontSize: 14,
+    color: '#9CA3AF',
+    textAlign: 'center',
   },
   alertCard: {
     borderRadius: 8,
@@ -739,20 +1038,26 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 4,
   },
-  emptyState: {
-    padding: 40,
-    alignItems: 'center',
+  alertActions: {
+    flexDirection: 'row',
+    padding: 12,
+    gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.02)',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.05)',
   },
-  emptyStateText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#6B7280',
-    marginBottom: 8,
+  actionBtn: {
+    flex: 1,
+    padding: 8,
+    borderRadius: 6,
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
   },
-  emptyStateSubtext: {
-    fontSize: 14,
-    color: '#9CA3AF',
+  actionBtnText: {
+    fontSize: 12,
     textAlign: 'center',
+    color: '#374151',
   },
   card: {
     backgroundColor: 'white',
@@ -852,8 +1157,18 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: '600',
   },
+  callVisitorBtn: {
+    backgroundColor: '#3B82F6',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  callVisitorBtnText: {
+    color: 'white',
+    fontWeight: '600',
+  },
   emergencyCard: {
-    backgroundColor: '#16A34A',
+    backgroundColor: '#DC2626',
     borderRadius: 8,
     padding: 16,
     marginBottom: 16,
@@ -866,7 +1181,7 @@ const styles = StyleSheet.create({
   },
   emergencySubtitle: {
     fontSize: 14,
-    color: '#BBF7D0',
+    color: '#FEE2E2',
     marginBottom: 16,
   },
   emergencyButton: {
@@ -876,14 +1191,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   emergencyButtonText: {
-    color: '#16A34A',
+    color: '#DC2626',
     fontWeight: 'bold',
-    fontSize: 18,
+    fontSize: 16,
+  },
+  onlineCount: {
+    fontSize: 14,
+    color: '#16A34A',
+    marginBottom: 16,
+    fontWeight: '600',
   },
   securityTeam: {
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
+    marginBottom: 12,
   },
   securityTeamHeader: {
     flexDirection: 'row',
@@ -919,9 +1241,15 @@ const styles = StyleSheet.create({
   statusDot: {
     fontSize: 8,
   },
-  contactLink: {
-    fontSize: 14,
-    color: '#2563EB',
+  callButton: {
+    backgroundColor: '#16A34A',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  callButtonText: {
+    color: 'white',
+    fontWeight: '600',
   },
   modalOverlay: {
     flex: 1,
@@ -987,7 +1315,7 @@ const styles = StyleSheet.create({
     borderColor: '#16A34A',
   },
   typeButtonText: {
-    fontSize: 14,
+    fontSize: 12,
     textTransform: 'capitalize',
     color: '#6B7280',
   },
@@ -1007,6 +1335,58 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  commentsScroll: {
+    maxHeight: 400,
+    marginBottom: 16,
+  },
+  noComments: {
+    textAlign: 'center',
+    color: '#9CA3AF',
+    padding: 40,
+  },
+  commentCard: {
+    backgroundColor: '#F9FAFB',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  commentUser: {
+    fontWeight: 'bold',
+    color: '#16A34A',
+    marginBottom: 4,
+  },
+  commentText: {
+    color: '#374151',
+    marginBottom: 4,
+  },
+  commentTime: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  commentInputContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'flex-end',
+  },
+  commentInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    maxHeight: 100,
+  },
+  sendCommentBtn: {
+    backgroundColor: '#16A34A',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  sendCommentText: {
+    color: 'white',
+    fontWeight: 'bold',
   },
   fab: {
     position: 'absolute',
