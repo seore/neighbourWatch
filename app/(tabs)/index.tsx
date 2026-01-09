@@ -1,27 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Modal,
-  StyleSheet,
-  SafeAreaView,
-  StatusBar,
-  Alert,
-  RefreshControl,
   ActivityIndicator,
+  Alert,
   Linking,
-  Platform,
+  Modal,
+  RefreshControl,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../supabase/supabase';
 
-const showNotification = (title: string, message: string) => {
-    Alert.alert(title, message, [{ text: 'OK' }]);
-  };
-
-interface Alerts {
+interface AlertType {
   id: number;
   type: 'suspicious' | 'emergency' | 'info';
   title: string;
@@ -51,6 +46,7 @@ interface VigilanteGroup {
   status: 'online' | 'offline';
   members: number;
   contact: string;
+  emergency_contact?: string;
 }
 
 interface Comment {
@@ -66,11 +62,11 @@ export default function NeighborWatch() {
   const [showReport, setShowReport] = useState(false);
   const [showVisitorForm, setShowVisitorForm] = useState(false);
   const [showComments, setShowComments] = useState(false);
-  const [selectedAlert, setSelectedAlert] = useState<Alerts | null>(null);
+  const [selectedAlert, setSelectedAlert] = useState<AlertType | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   
-  const [alerts, setAlerts] = useState<Alerts[]>([]);
+  const [alerts, setAlerts] = useState<AlertType[]>([]);
   const [visitors, setVisitors] = useState<Visitor[]>([]);
   const [vigilanteGroups, setVigilanteGroups] = useState<VigilanteGroup[]>([]);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -109,7 +105,6 @@ export default function NeighborWatch() {
     setLoading(false);
   };
 
-  // Fetch Alerts from Supabase
   const fetchAlerts = async () => {
     try {
       const { data, error } = await supabase
@@ -126,7 +121,6 @@ export default function NeighborWatch() {
     }
   };
 
-  // Fetch Visitors from Supabase
   const fetchVisitors = async () => {
     try {
       const { data, error } = await supabase
@@ -143,7 +137,6 @@ export default function NeighborWatch() {
     }
   };
 
-  // Fetch Vigilante Groups from Supabase
   const fetchVigilanteGroups = async () => {
     try {
       const { data, error } = await supabase
@@ -155,7 +148,6 @@ export default function NeighborWatch() {
       setVigilanteGroups(data || []);
     } catch (error) {
       console.error('Error fetching vigilante groups:', error);
-      Alert.alert('Error', 'Failed to load security teams');
     }
   };
 
@@ -174,7 +166,6 @@ export default function NeighborWatch() {
     }
   };
 
-  // Setup real-time subscriptions
   const setupRealtimeSubscriptions = () => {
     const alertsChannel = supabase
       .channel('alerts-channel')
@@ -182,11 +173,11 @@ export default function NeighborWatch() {
         { event: '*', schema: 'public', table: 'alerts' },
         (payload) => {
           if (payload.eventType === 'INSERT') {
-            setAlerts(prev => [payload.new as Alerts, ...prev]);
-            showNotification('New Alert!', (payload.new as Alerts).title);
+            setAlerts(prev => [payload.new as AlertType, ...prev]);
+            showNotification('New Alert!', (payload.new as AlertType).title);
           } else if (payload.eventType === 'UPDATE') {
             setAlerts(prev => prev.map(a => 
-              a.id === payload.new.id ? payload.new as Alerts : a
+              a.id === payload.new.id ? payload.new as AlertType : a
             ));
           } else if (payload.eventType === 'DELETE') {
             setAlerts(prev => prev.filter(a => a.id !== payload.old.id));
@@ -195,7 +186,6 @@ export default function NeighborWatch() {
       )
       .subscribe();
 
-    // Subscribe to visitors
     const visitorsChannel = supabase
       .channel('visitors-channel')
       .on('postgres_changes',
@@ -213,7 +203,6 @@ export default function NeighborWatch() {
       )
       .subscribe();
 
-    // Subscribe to vigilante groups
     const vigilanteChannel = supabase
       .channel('vigilante-channel')
       .on('postgres_changes',
@@ -222,11 +211,28 @@ export default function NeighborWatch() {
       )
       .subscribe();
 
+    const commentsChannel = supabase
+      .channel('comments-channel')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'comments' },
+        (payload) => {
+          if (selectedAlert && payload.new && (payload.new as Comment).alert_id === selectedAlert.id) {
+            fetchComments(selectedAlert.id);
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
       alertsChannel.unsubscribe();
       visitorsChannel.unsubscribe();
       vigilanteChannel.unsubscribe();
+      commentsChannel.unsubscribe();
     };
+  };
+
+  const showNotification = (title: string, message: string) => {
+    Alert.alert(title, message, [{ text: 'OK' }]);
   };
 
   const handleSubmitReport = async () => {
@@ -254,7 +260,6 @@ export default function NeighborWatch() {
       setShowReport(false);
       Alert.alert('Success', 'Report submitted successfully!');
       
-      // Notify security if emergency
       if (reportForm.type === 'emergency') {
         Alert.alert('Emergency Alert', 'Security teams have been notified!', [
           { text: 'Call Security Now', onPress: () => callEmergency() },
@@ -379,16 +384,24 @@ export default function NeighborWatch() {
   };
 
   const callEmergency = async () => {
-    const emergencyNumber = '0803456789'; //default number
+    const emergencyNumber = '0803456789';
     try {
       const supported = await Linking.canOpenURL(`tel:${emergencyNumber}`);
       if (supported) {
         await Linking.openURL(`tel:${emergencyNumber}`);
       } else {
-        Alert.alert('Error', 'Phone calling is not supported on this device');
+        Alert.alert(
+          'Emergency Contact',
+          `Call this number: ${emergencyNumber}`,
+          [{ text: 'OK' }]
+        );
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to open phone dialer');
+      Alert.alert(
+        'Emergency Contact',
+        `Please call: ${emergencyNumber}`,
+        [{ text: 'OK' }]
+      );
     }
   };
 
@@ -398,14 +411,21 @@ export default function NeighborWatch() {
       if (supported) {
         await Linking.openURL(`tel:${contact}`);
       } else {
-        Alert.alert('Error', 'Phone calling is not supported on this device');
+        Alert.alert(
+          'Security Contact',
+          `Call this number: ${contact}`,
+          [{ text: 'OK' }]
+        );
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to open phone dialer');
+      Alert.alert(
+        'Security Contact',
+        `Please call: ${contact}`,
+        [{ text: 'OK' }]
+      );
     }
   };
 
-  // Pull to refresh
   const onRefresh = async () => {
     setRefreshing(true);
     await loadAllData();
@@ -418,30 +438,22 @@ export default function NeighborWatch() {
     const diff = Math.floor((now.getTime() - time.getTime()) / 1000);
 
     if (diff < 60) return 'Just now';
-    if (diff < 3600) return `${Math.floor(diff / 60)} mins ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
-    return `${Math.floor(diff / 86400)} days ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+    return new Date(timestamp).toLocaleDateString();
   };
 
   const getAlertColor = (type: string) => {
     switch(type) {
-      case 'emergency': return '#FEE2E2';
-      case 'suspicious': return '#FFEDD5';
-      case 'info': return '#DBEAFE';
-      default: return '#F3F4F6';
+      case 'emergency': return { bg: '#FEF2F2', border: '#DC2626', icon: '🚨' };
+      case 'suspicious': return { bg: '#FFF7ED', border: '#EA580C', icon: '⚠️' };
+      case 'info': return { bg: '#EFF6FF', border: '#2563EB', icon: 'ℹ️' };
+      default: return { bg: '#F9FAFB', border: '#6B7280', icon: '📢' };
     }
   };
 
-  const getAlertBorderColor = (type: string) => {
-    switch(type) {
-      case 'emergency': return '#EF4444';
-      case 'suspicious': return '#F97316';
-      case 'info': return '#3B82F6';
-      default: return '#9CA3AF';
-    }
-  };
-
-  const openComments = (alert: Alerts) => {
+  const openComments = (alert: AlertType) => {
     setSelectedAlert(alert);
     fetchComments(alert.id);
     setShowComments(true);
@@ -450,30 +462,36 @@ export default function NeighborWatch() {
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#16A34A" />
+        <StatusBar barStyle="light-content" backgroundColor="#0F766E" />
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#16A34A" />
-          <Text style={styles.loadingText}>Loading Neighbour Watch...</Text>
+          <ActivityIndicator size="large" color="#0F766E" />
+          <Text style={styles.loadingText}>Loading NeighborWatch...</Text>
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#16A34A" />
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <StatusBar barStyle="light-content" backgroundColor="#0F766E" />
       
       {/* Header */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>🛡️ Neighbour Watch</Text>
+        <View style={styles.headerContent}>
+          <View>
+            <Text style={styles.headerTitle}>🛡️ NeighbourWatch</Text>
+            <View style={styles.headerSubtitleRow}>
+              <View style={styles.liveDot} />
+              <Text style={styles.headerSubtitle}>Friends Colony Estate</Text>
+            </View>
+          </View>
+          <TouchableOpacity 
+            style={styles.sosButton}
+            onPress={callEmergency}
+          >
+            <Text style={styles.sosText}>SOS</Text>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity 
-          style={styles.emergencyHeaderBtn}
-          onPress={callEmergency}
-        >
-          <Text style={styles.emergencyHeaderText}>🚨 SOS</Text>
-        </TouchableOpacity>
       </View>
 
       {/* Navigation Tabs */}
@@ -482,39 +500,32 @@ export default function NeighborWatch() {
           style={[styles.tab, currentView === 'feed' && styles.tabActive]}
           onPress={() => setCurrentView('feed')}
         >
-          <View style={styles.tabContent}>
-            <Text style={[styles.tabText, currentView === 'feed' && styles.tabTextActive]}>
-              🔔 Alerts
-            </Text>
-            {unreadAlerts > 0 && (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{unreadAlerts}</Text>
-              </View>
-            )}
-          </View>
+          <Text style={[styles.tabIcon, currentView === 'feed' && styles.tabIconActive]}>🔔</Text>
+          <Text style={[styles.tabText, currentView === 'feed' && styles.tabTextActive]}>Alerts</Text>
+          {unreadAlerts > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{unreadAlerts}</Text>
+            </View>
+          )}
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, currentView === 'visitors' && styles.tabActive]}
           onPress={() => setCurrentView('visitors')}
         >
-          <View style={styles.tabContent}>
-            <Text style={[styles.tabText, currentView === 'visitors' && styles.tabTextActive]}>
-              👥 Visitors
-            </Text>
-            {pendingVisitors > 0 && (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{pendingVisitors}</Text>
-              </View>
-            )}
-          </View>
+          <Text style={[styles.tabIcon, currentView === 'visitors' && styles.tabIconActive]}>👥</Text>
+          <Text style={[styles.tabText, currentView === 'visitors' && styles.tabTextActive]}>Visitors</Text>
+          {pendingVisitors > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{pendingVisitors}</Text>
+            </View>
+          )}
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, currentView === 'vigilante' && styles.tabActive]}
           onPress={() => setCurrentView('vigilante')}
         >
-          <Text style={[styles.tabText, currentView === 'vigilante' && styles.tabTextActive]}>
-            🛡️ Security
-          </Text>
+          <Text style={[styles.tabIcon, currentView === 'vigilante' && styles.tabIconActive]}>🛡️</Text>
+          <Text style={[styles.tabText, currentView === 'vigilante' && styles.tabTextActive]}>Security</Text>
         </TouchableOpacity>
       </View>
 
@@ -522,77 +533,84 @@ export default function NeighborWatch() {
       <ScrollView 
         style={styles.content}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#16A34A']} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#0F766E']} tintColor="#0F766E" />
         }
       >
         {/* Alerts Feed */}
         {currentView === 'feed' && (
-          <View>
-            <View style={styles.locationCard}>
-              <Text style={styles.locationText}>📍 Block C, House 17</Text>
-              <Text style={styles.liveIndicator}>🟢 Live Updates</Text>
-            </View>
-
+          <View style={styles.feedContainer}>
             {alerts.length === 0 ? (
               <View style={styles.emptyState}>
+                <Text style={styles.emptyIcon}>📭</Text>
                 <Text style={styles.emptyStateText}>No alerts yet</Text>
-                <Text style={styles.emptyStateSubtext}>Tap the red button to report</Text>
+                <Text style={styles.emptyStateSubtext}>Your neighborhood is secure</Text>
               </View>
             ) : (
-              alerts.map(alert => (
-                <View key={alert.id} style={[styles.alertCard, { backgroundColor: getAlertColor(alert.type), borderLeftColor: getAlertBorderColor(alert.type) }]}>
-                  <View style={styles.alertHeader}>
-                    <View style={styles.alertTitleRow}>
-                      <Text style={styles.alertTitle}>{alert.title}</Text>
-                      <Text style={alert.status === 'resolved' ? styles.statusResolved : styles.statusActive}>
-                        {alert.status === 'resolved' ? '✓' : '⚠️'}
-                      </Text>
+              alerts.map(alert => {
+                const colors = getAlertColor(alert.type);
+                return (
+                  <View key={alert.id} style={[styles.alertCard, { backgroundColor: colors.bg, borderLeftColor: colors.border }]}>
+                    <View style={styles.alertHeader}>
+                      <View style={styles.alertTop}>
+                        <Text style={styles.alertIcon}>{colors.icon}</Text>
+                        <View style={styles.alertTitleContainer}>
+                          <Text style={styles.alertTitle}>{alert.title}</Text>
+                          <View style={styles.alertMetaRow}>
+                            <Text style={styles.alertMeta}>📍 {alert.location}</Text>
+                            <Text style={styles.alertMeta}>•</Text>
+                            <Text style={styles.alertMeta}>{getTimeAgo(alert.created_at)}</Text>
+                          </View>
+                        </View>
+                        {alert.status === 'resolved' ? (
+                          <View style={styles.resolvedBadge}>
+                            <Text style={styles.resolvedText}>✓</Text>
+                          </View>
+                        ) : (
+                          <View style={styles.activeBadge}>
+                            <View style={styles.activePulse} />
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.alertDescription}>{alert.description}</Text>
+                      <Text style={styles.alertReporter}>Reported by {alert.reporter}</Text>
                     </View>
-                    <Text style={styles.alertDescription}>{alert.description}</Text>
-                  </View>
-                  <View style={styles.alertFooter}>
-                    <Text style={styles.alertMeta}>📍 {alert.location}</Text>
-                    <Text style={styles.alertMeta}>🕐 {getTimeAgo(alert.created_at)}</Text>
-                    <Text style={styles.alertReporter}>By: {alert.reporter}</Text>
-                  </View>
-                  <View style={styles.alertActions}>
-                    <TouchableOpacity 
-                      style={styles.actionBtn}
-                      onPress={() => openComments(alert)}
-                    >
-                      <Text style={styles.actionBtnText}>💬 {alert.comments} Comments</Text>
-                    </TouchableOpacity>
-                    {alert.status === 'active' && (
+                    <View style={styles.alertActions}>
                       <TouchableOpacity 
-                        style={styles.actionBtn}
-                        onPress={() => resolveAlert(alert.id)}
+                        style={styles.actionButton}
+                        onPress={() => openComments(alert)}
                       >
-                        <Text style={styles.actionBtnText}>✓ Mark Resolved</Text>
+                        <Text style={styles.actionButtonText}>💬 {alert.comments}</Text>
                       </TouchableOpacity>
-                    )}
+                      {alert.status === 'active' && (
+                        <TouchableOpacity 
+                          style={[styles.actionButton, styles.resolveButton]}
+                          onPress={() => resolveAlert(alert.id)}
+                        >
+                          <Text style={styles.resolveButtonText}>✓ Resolve</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
                   </View>
-                </View>
-              ))
+                );
+              })
             )}
           </View>
         )}
 
         {/* Visitors Management */}
         {currentView === 'visitors' && (
-          <View>
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Visitor Management</Text>
-              <Text style={styles.cardSubtitle}>Pre-register for faster gate access</Text>
-              <TouchableOpacity
-                style={styles.primaryButton}
-                onPress={() => setShowVisitorForm(true)}
-              >
-                <Text style={styles.primaryButtonText}>+ Register New Visitor</Text>
-              </TouchableOpacity>
-            </View>
+          <View style={styles.feedContainer}>
+            <TouchableOpacity
+              style={styles.addButton}
+              onPress={() => setShowVisitorForm(true)}
+            >
+              <Text style={styles.addButtonIcon}>+</Text>
+              <Text style={styles.addButtonText}>Register New Visitor</Text>
+            </TouchableOpacity>
 
             {visitors.length === 0 ? (
               <View style={styles.emptyState}>
+                <Text style={styles.emptyIcon}>👤</Text>
                 <Text style={styles.emptyStateText}>No visitors</Text>
                 <Text style={styles.emptyStateSubtext}>Register visitors for quick access</Text>
               </View>
@@ -600,46 +618,53 @@ export default function NeighborWatch() {
               visitors.filter(v => v.status !== 'rejected').map(visitor => (
                 <View key={visitor.id} style={styles.visitorCard}>
                   <View style={styles.visitorHeader}>
-                    <View>
+                    <View style={styles.visitorAvatar}>
+                      <Text style={styles.visitorAvatarText}>{visitor.name.charAt(0)}</Text>
+                    </View>
+                    <View style={styles.visitorInfo}>
                       <Text style={styles.visitorName}>{visitor.name}</Text>
-                      <Text style={styles.visitorPhone}>📞 {visitor.phone}</Text>
+                      <Text style={styles.visitorDetail}>📞 {visitor.phone}</Text>
                       {visitor.vehicle_plate && (
-                        <Text style={styles.visitorPhone}>🚗 {visitor.vehicle_plate}</Text>
+                        <Text style={styles.visitorDetail}>🚗 {visitor.vehicle_plate}</Text>
                       )}
                     </View>
                     <View style={visitor.status === 'approved' ? styles.statusApproved : styles.statusPending}>
-                      <Text style={styles.statusText}>{visitor.status}</Text>
+                      <Text style={styles.statusText}>{visitor.status === 'approved' ? '✓' : '⏳'}</Text>
                     </View>
                   </View>
                   <View style={styles.visitorDetails}>
-                    <Text style={styles.visitorDetail}>Purpose: {visitor.purpose}</Text>
-                    <Text style={styles.visitorDetail}>Host: {visitor.host}</Text>
-                    <Text style={styles.visitorDetail}>Duration: {visitor.duration}</Text>
-                    <Text style={styles.visitorDetail}>Registered: {getTimeAgo(visitor.created_at)}</Text>
+                    <View style={styles.visitorDetailRow}>
+                      <Text style={styles.visitorDetailLabel}>Purpose:</Text>
+                      <Text style={styles.visitorDetailValue}>{visitor.purpose}</Text>
+                    </View>
+                    <View style={styles.visitorDetailRow}>
+                      <Text style={styles.visitorDetailLabel}>Host:</Text>
+                      <Text style={styles.visitorDetailValue}>{visitor.host}</Text>
+                    </View>
+                    <View style={styles.visitorDetailRow}>
+                      <Text style={styles.visitorDetailLabel}>Duration:</Text>
+                      <Text style={styles.visitorDetailValue}>{visitor.duration}</Text>
+                    </View>
+                    <View style={styles.visitorDetailRow}>
+                      <Text style={styles.visitorDetailLabel}>Registered:</Text>
+                      <Text style={styles.visitorDetailValue}>{getTimeAgo(visitor.created_at)}</Text>
+                    </View>
                   </View>
                   {visitor.status === 'pending' && (
                     <View style={styles.visitorActions}>
                       <TouchableOpacity
-                        style={styles.approveButton}
+                        style={styles.approveBtn}
                         onPress={() => approveVisitor(visitor.id)}
                       >
-                        <Text style={styles.approveButtonText}>✓ Approve</Text>
+                        <Text style={styles.approveBtnText}>✓ Approve</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
-                        style={styles.rejectButton}
+                        style={styles.rejectBtn}
                         onPress={() => rejectVisitor(visitor.id)}
                       >
-                        <Text style={styles.rejectButtonText}>✕ Reject</Text>
+                        <Text style={styles.rejectBtnText}>✕ Reject</Text>
                       </TouchableOpacity>
                     </View>
-                  )}
-                  {visitor.status === 'approved' && (
-                    <TouchableOpacity
-                      style={styles.callVisitorBtn}
-                      onPress={() => callSecurityTeam(visitor.phone)}
-                    >
-                      <Text style={styles.callVisitorBtnText}>📞 Call Visitor</Text>
-                    </TouchableOpacity>
                   )}
                 </View>
               ))
@@ -649,44 +674,48 @@ export default function NeighborWatch() {
 
         {/* Security Teams */}
         {currentView === 'vigilante' && (
-          <View>
+          <View style={styles.feedContainer}>
             <View style={styles.emergencyCard}>
-              <Text style={styles.emergencyTitle}>🚨 Emergency Contact</Text>
-              <Text style={styles.emergencySubtitle}>Immediate security response</Text>
+              <Text style={styles.emergencyIcon}>🚨</Text>
+              <Text style={styles.emergencyTitle}>Emergency Contact</Text>
+              <Text style={styles.emergencySubtitle}>24/7 Security Response</Text>
               <TouchableOpacity 
                 style={styles.emergencyButton}
                 onPress={callEmergency}
               >
-                <Text style={styles.emergencyButtonText}>📞 CALL SECURITY NOW</Text>
+                <Text style={styles.emergencyButtonText}>CALL NOW</Text>
               </TouchableOpacity>
             </View>
 
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Security Teams</Text>
+            <View style={styles.securityH}>
+              <Text style={styles.securityTitle}>Security Teams</Text>
               <Text style={styles.onlineCount}>
-                {vigilanteGroups.filter(g => g.status === 'online').length} teams online
+                {vigilanteGroups.filter(g => g.status === 'online').length} online
               </Text>
-              {vigilanteGroups.map(group => (
-                <View key={group.id} style={styles.securityTeam}>
-                  <View style={styles.securityTeamHeader}>
-                    <View>
-                      <Text style={styles.securityTeamName}>{group.name}</Text>
-                      <Text style={styles.securityTeamMembers}>{group.members} members</Text>
-                    </View>
-                    <View style={group.status === 'online' ? styles.statusOnline : styles.statusOffline}>
-                      <Text style={styles.statusDot}>●</Text>
-                      <Text style={styles.statusText}>{group.status}</Text>
-                    </View>
-                  </View>
-                  <TouchableOpacity 
-                    style={styles.callButton}
-                    onPress={() => callSecurityTeam(group.contact)}
-                  >
-                    <Text style={styles.callButtonText}>📞 Call {group.contact}</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
             </View>
+
+            {vigilanteGroups.map(group => (
+              <View key={group.id} style={styles.securityCard}>
+                <View style={styles.securityH}>
+                  <View>
+                    <Text style={styles.securityName}>{group.name}</Text>
+                    <Text style={styles.securityMembers}>{group.members} members</Text>
+                  </View>
+                  <View style={group.status === 'online' ? styles.statusOnline : styles.statusOffline}>
+                    <View style={[styles.statusDot, group.status === 'online' && styles.statusDotActive]} />
+                    <Text style={[styles.statusLabel, group.status === 'online' && styles.statusLabelActive]}>
+                      {group.status}
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity 
+                  style={styles.callButton}
+                  onPress={() => callSecurityTeam(group.contact)}
+                >
+                  <Text style={styles.callButtonText}>📞 Call {group.contact}</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
           </View>
         )}
       </ScrollView>
@@ -701,46 +730,59 @@ export default function NeighborWatch() {
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <ScrollView>
-              <Text style={styles.label}>Type *</Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.label}>Type</Text>
               <View style={styles.typeButtons}>
-                {(['suspicious', 'emergency', 'info'] as const).map(type => (
-                  <TouchableOpacity
-                    key={type}
-                    style={[styles.typeButton, reportForm.type === type && styles.typeButtonActive]}
-                    onPress={() => setReportForm({...reportForm, type})}
-                  >
-                    <Text style={[styles.typeButtonText, reportForm.type === type && styles.typeButtonTextActive]}>
-                      {type === 'emergency' ? '🚨' : type === 'suspicious' ? '⚠️' : 'ℹ️'} {type}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                {(['suspicious', 'emergency', 'info'] as const).map(type => {
+                  const colors = getAlertColor(type);
+                  return (
+                    <TouchableOpacity
+                      key={type}
+                      style={[
+                        styles.typeButton,
+                        reportForm.type === type && { backgroundColor: colors.border }
+                      ]}
+                      onPress={() => setReportForm({...reportForm, type})}
+                    >
+                      <Text style={styles.typeButtonIcon}>{colors.icon}</Text>
+                      <Text style={[
+                        styles.typeButtonText,
+                        reportForm.type === type && styles.typeButtonTextActive
+                      ]}>
+                        {type}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
 
-              <Text style={styles.label}>Title *</Text>
+              <Text style={styles.label}>Title</Text>
               <TextInput
                 style={styles.input}
                 value={reportForm.title}
                 onChangeText={(title) => setReportForm({...reportForm, title})}
                 placeholder="Brief description"
+                placeholderTextColor="#9CA3AF"
               />
 
-              <Text style={styles.label}>Description *</Text>
+              <Text style={styles.label}>Description</Text>
               <TextInput
                 style={[styles.input, styles.textArea]}
                 value={reportForm.description}
                 onChangeText={(description) => setReportForm({...reportForm, description})}
                 placeholder="Provide detailed information..."
+                placeholderTextColor="#9CA3AF"
                 multiline
                 numberOfLines={4}
               />
 
-              <Text style={styles.label}>Location *</Text>
+              <Text style={styles.label}>Location</Text>
               <TextInput
                 style={styles.input}
                 value={reportForm.location}
                 onChangeText={(location) => setReportForm({...reportForm, location})}
                 placeholder="e.g., Block C, House 17"
+                placeholderTextColor="#9CA3AF"
               />
 
               <TouchableOpacity style={styles.submitButton} onPress={handleSubmitReport}>
@@ -761,30 +803,33 @@ export default function NeighborWatch() {
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <ScrollView>
-              <Text style={styles.label}>Visitor Name *</Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.label}>Visitor Name</Text>
               <TextInput
                 style={styles.input}
                 value={visitorForm.name}
                 onChangeText={(name) => setVisitorForm({...visitorForm, name})}
                 placeholder="Full name"
+                placeholderTextColor="#9CA3AF"
               />
 
-              <Text style={styles.label}>Phone Number *</Text>
+              <Text style={styles.label}>Phone Number</Text>
               <TextInput
                 style={styles.input}
                 value={visitorForm.phone}
                 onChangeText={(phone) => setVisitorForm({...visitorForm, phone})}
                 placeholder="080XXXXXXXX"
+                placeholderTextColor="#9CA3AF"
                 keyboardType="phone-pad"
               />
 
-              <Text style={styles.label}>Purpose of Visit *</Text>
+              <Text style={styles.label}>Purpose of Visit</Text>
               <TextInput
                 style={styles.input}
                 value={visitorForm.purpose}
                 onChangeText={(purpose) => setVisitorForm({...visitorForm, purpose})}
                 placeholder="e.g., Guest, Plumber, Delivery"
+                placeholderTextColor="#9CA3AF"
               />
 
               <Text style={styles.label}>Vehicle Plate (Optional)</Text>
@@ -793,15 +838,17 @@ export default function NeighborWatch() {
                 value={visitorForm.vehicle_plate}
                 onChangeText={(vehicle_plate) => setVisitorForm({...visitorForm, vehicle_plate})}
                 placeholder="e.g., LAG-123-XY"
+                placeholderTextColor="#9CA3AF"
                 autoCapitalize="characters"
               />
 
-              <Text style={styles.label}>Duration (hours) *</Text>
+              <Text style={styles.label}>Duration (hours)</Text>
               <TextInput
                 style={styles.input}
                 value={visitorForm.duration}
                 onChangeText={(duration) => setVisitorForm({...visitorForm, duration})}
                 placeholder="2"
+                placeholderTextColor="#9CA3AF"
                 keyboardType="numeric"
               />
 
@@ -823,15 +870,26 @@ export default function NeighborWatch() {
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <ScrollView style={styles.commentsScroll}>
+            <ScrollView style={styles.commentsScroll} showsVerticalScrollIndicator={false}>
               {comments.length === 0 ? (
-                <Text style={styles.noComments}>No comments yet. Be the first!</Text>
+                <View style={styles.noCommentsContainer}>
+                  <Text style={styles.noCommentsIcon}>💬</Text>
+                  <Text style={styles.noComments}>No comments yet</Text>
+                  <Text style={styles.noCommentsSubtext}>Be the first to comment</Text>
+                </View>
               ) : (
                 comments.map(comment => (
                   <View key={comment.id} style={styles.commentCard}>
-                    <Text style={styles.commentUser}>{comment.user_name}</Text>
+                    <View style={styles.commentHeader}>
+                      <View style={styles.commentAvatar}>
+                        <Text style={styles.commentAvatarText}>{comment.user_name.charAt(0)}</Text>
+                      </View>
+                      <View style={styles.commentInfo}>
+                        <Text style={styles.commentUser}>{comment.user_name}</Text>
+                        <Text style={styles.commentTime}>{getTimeAgo(comment.created_at)}</Text>
+                      </View>
+                    </View>
                     <Text style={styles.commentText}>{comment.comment_text}</Text>
-                    <Text style={styles.commentTime}>{getTimeAgo(comment.created_at)}</Text>
                   </View>
                 ))
               )}
@@ -842,13 +900,14 @@ export default function NeighborWatch() {
                 value={newComment}
                 onChangeText={setNewComment}
                 placeholder="Add a comment..."
+                placeholderTextColor="#9CA3AF"
                 multiline
               />
               <TouchableOpacity 
-                style={styles.sendCommentBtn}
+                style={styles.sendButton}
                 onPress={addComment}
               >
-                <Text style={styles.sendCommentText}>Send</Text>
+                <Text style={styles.sendButtonText}>Send</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -860,7 +919,7 @@ export default function NeighborWatch() {
         style={styles.fab}
         onPress={() => setShowReport(true)}
       >
-        <Text style={styles.fabText}>⚠️</Text>
+        <Text style={styles.fabIcon}>+</Text>
       </TouchableOpacity>
     </SafeAreaView>
   );
@@ -869,44 +928,66 @@ export default function NeighborWatch() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: '#e8e8e9ff',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#F3F4F6',
   },
   loadingText: {
     marginTop: 16,
     fontSize: 16,
     color: '#6B7280',
+    fontWeight: '500',
   },
   header: {
-    backgroundColor: '#16A34A',
-    padding: 16,
+    backgroundColor: '#0F766E',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+  },
+  headerContent: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: 'bold',
     color: 'white',
+    marginBottom: 4,
+  },
+  headerSubtitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10B981',
+    marginRight: 6,
   },
   headerSubtitle: {
-    fontSize: 12,
-    color: '#BBF7D0',
+    fontSize: 14,
+    color: '#D1FAE5',
   },
-  emergencyHeaderBtn: {
+  sosButton: {
     backgroundColor: '#DC2626',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
     borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 3,
   },
-  emergencyHeaderText: {
+  sosText: {
     color: 'white',
     fontWeight: 'bold',
-    fontSize: 14,
+    fontSize: 16,
   },
   tabContainer: {
     flexDirection: 'row',
@@ -916,17 +997,21 @@ const styles = StyleSheet.create({
   },
   tab: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
+    position: 'relative',
   },
   tabActive: {
-    borderBottomWidth: 2,
-    borderBottomColor: '#16A34A',
+    borderBottomWidth: 3,
+    borderBottomColor: '#0F766E',
   },
-  tabContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
+  tabIcon: {
+    fontSize: 20,
+    marginBottom: 4,
+    opacity: 0.6,
+  },
+  tabIconActive: {
+    opacity: 1,
   },
   tabText: {
     fontSize: 12,
@@ -934,109 +1019,127 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   tabTextActive: {
-    color: '#16A34A',
+    color: '#0F766E',
     fontWeight: 'bold',
   },
   badge: {
+    position: 'absolute',
+    top: 8,
+    right: '25%',
     backgroundColor: '#DC2626',
     borderRadius: 10,
-    minWidth: 18,
-    height: 18,
+    minWidth: 20,
+    height: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 5,
+    paddingHorizontal: 6,
   },
   badgeText: {
     color: 'white',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 'bold',
   },
   content: {
     flex: 1,
-    padding: 16,
   },
-  locationCard: {
-    backgroundColor: 'white',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  locationText: {
-    fontSize: 14,
-    color: '#6B7280',
-  },
-  liveIndicator: {
-    fontSize: 12,
-    color: '#16A34A',
-    fontWeight: '600',
+  feedContainer: {
+    padding: 18,
   },
   emptyState: {
-    padding: 40,
+    paddingVertical: 50,
     alignItems: 'center',
   },
+  emptyIcon: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
   emptyStateText: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#6B7280',
+    color: '#374151',
     marginBottom: 8,
   },
   emptyStateSubtext: {
     fontSize: 14,
     color: '#9CA3AF',
-    textAlign: 'center',
   },
   alertCard: {
-    borderRadius: 8,
-    marginBottom: 12,
-    borderLeftWidth: 4,
+    borderRadius: 5,
+    marginBottom: 16,
+    borderLeftWidth: 5,
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 4,
+    elevation: 3,
   },
   alertHeader: {
-    padding: 12,
+    padding: 16,
   },
-  alertTitleRow: {
+  alertTop: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 12,
   },
-  alertTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
+  alertIcon: {
+    fontSize: 32,
+    marginRight: 12,
+  },
+  alertTitleContainer: {
     flex: 1,
   },
-  statusResolved: {
+  alertTitle: {
     fontSize: 18,
-    color: '#16A34A',
+    fontWeight: 'bold',
+    color: '#111827',
+    marginBottom: 6,
   },
-  statusActive: {
-    fontSize: 18,
-    color: '#DC2626',
-  },
-  alertDescription: {
-    fontSize: 14,
-    color: '#374151',
-    marginTop: 4,
-  },
-  alertFooter: {
-    padding: 12,
-    backgroundColor: 'rgba(0,0,0,0.02)',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(0,0,0,0.05)',
+  alertMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   alertMeta: {
-    fontSize: 12,
+    fontSize: 13,
     color: '#6B7280',
-    marginBottom: 2,
+  },
+  resolvedBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#10B981',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  resolvedText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  activeBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FEE2E2',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  activePulse: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#DC2626',
+  },
+  alertDescription: {
+    fontSize: 15,
+    color: '#374151',
+    lineHeight: 22,
+    marginBottom: 12,
   },
   alertReporter: {
-    fontSize: 12,
-    color: '#16A34A',
+    fontSize: 13,
+    color: '#0F766E',
     fontWeight: '600',
-    marginTop: 4,
   },
   alertActions: {
     flexDirection: 'row',
@@ -1046,177 +1149,247 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: 'rgba(0,0,0,0.05)',
   },
-  actionBtn: {
+  actionButton: {
     flex: 1,
-    padding: 8,
-    borderRadius: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
     backgroundColor: 'white',
     borderWidth: 1,
     borderColor: '#D1D5DB',
-  },
-  actionBtnText: {
-    fontSize: 12,
-    textAlign: 'center',
-    color: '#374151',
-  },
-  card: {
-    backgroundColor: 'white',
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  cardSubtitle: {
-    fontSize: 14,
-    color: '#6B7280',
-    marginBottom: 16,
-  },
-  primaryButton: {
-    backgroundColor: '#16A34A',
-    padding: 14,
-    borderRadius: 8,
     alignItems: 'center',
   },
-  primaryButtonText: {
+  actionButtonText: {
+    fontSize: 14,
+    color: '#374151',
+    fontWeight: '500',
+  },
+  resolveButton: {
+    backgroundColor: '#0F766E',
+    borderColor: '#0F766E',
+  },
+  resolveButtonText: {
     color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  addButton: {
+    flexDirection: 'row',
+    backgroundColor: '#0F766E',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  addButtonIcon: {
+    fontSize: 24,
+    color: 'white',
+    marginRight: 8,
     fontWeight: 'bold',
+  },
+  addButtonText: {
+    color: 'white',
     fontSize: 16,
+    fontWeight: 'bold',
   },
   visitorCard: {
     backgroundColor: 'white',
-    borderRadius: 8,
+    borderRadius: 16,
     padding: 16,
-    marginBottom: 12,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   visitorHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
+    marginBottom: 16,
   },
-  visitorName: {
-    fontSize: 16,
+  visitorAvatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#0F766E',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  visitorAvatarText: {
+    color: 'white',
+    fontSize: 20,
     fontWeight: 'bold',
   },
-  visitorPhone: {
-    fontSize: 14,
-    color: '#6B7280',
-    marginTop: 2,
+  visitorInfo: {
+    flex: 1,
+    justifyContent: 'center',
   },
-  visitorDetails: {
-    marginBottom: 12,
+  visitorName: {
+    fontSize: 17,
+    fontWeight: 'bold',
+    color: '#111827',
+    marginBottom: 4,
   },
   visitorDetail: {
     fontSize: 14,
     color: '#6B7280',
-    marginBottom: 4,
+    marginTop: 2,
   },
   statusApproved: {
     backgroundColor: '#D1FAE5',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   statusPending: {
     backgroundColor: '#FEF3C7',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   statusText: {
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'capitalize',
+    fontSize: 18,
+  },
+  visitorDetails: {
+    backgroundColor: '#F9FAFB',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  visitorDetailRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+  },
+  visitorDetailLabel: {
+    fontSize: 14,
+    color: '#6B7280',
+    width: 100,
+  },
+  visitorDetailValue: {
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '500',
+    flex: 1,
   },
   visitorActions: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
   },
-  approveButton: {
+  approveBtn: {
     flex: 1,
-    backgroundColor: '#16A34A',
-    padding: 12,
-    borderRadius: 8,
+    backgroundColor: '#0F766E',
+    padding: 14,
+    borderRadius: 10,
     alignItems: 'center',
   },
-  approveButtonText: {
+  approveBtnText: {
     color: 'white',
-    fontWeight: '600',
+    fontWeight: 'bold',
+    fontSize: 15,
   },
-  rejectButton: {
+  rejectBtn: {
     flex: 1,
-    backgroundColor: '#DC2626',
-    padding: 12,
-    borderRadius: 8,
+    backgroundColor: 'white',
+    padding: 14,
+    borderRadius: 10,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#DC2626',
   },
-  rejectButtonText: {
-    color: 'white',
-    fontWeight: '600',
-  },
-  callVisitorBtn: {
-    backgroundColor: '#3B82F6',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  callVisitorBtnText: {
-    color: 'white',
-    fontWeight: '600',
+  rejectBtnText: {
+    color: '#DC2626',
+    fontWeight: 'bold',
+    fontSize: 15,
   },
   emergencyCard: {
     backgroundColor: '#DC2626',
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
+    borderRadius: 16,
+    padding: 6,
+    alignItems: 'center',
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 5,
+  },
+  emergencyIcon: {
+    fontSize: 35,
+    marginBottom: 12,
   },
   emergencyTitle: {
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: 'bold',
     color: 'white',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   emergencySubtitle: {
     fontSize: 14,
     color: '#FEE2E2',
-    marginBottom: 16,
+    marginBottom: 20,
   },
   emergencyButton: {
     backgroundColor: 'white',
-    padding: 16,
-    borderRadius: 8,
-    alignItems: 'center',
+    paddingHorizontal: 25,
+    paddingVertical: 10,
+    borderRadius: 25,
   },
   emergencyButtonText: {
     color: '#DC2626',
     fontWeight: 'bold',
-    fontSize: 16,
+    fontSize: 10,
+  },
+  securityHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  securityTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#111827',
   },
   onlineCount: {
     fontSize: 14,
-    color: '#16A34A',
-    marginBottom: 16,
+    color: '#10B981',
     fontWeight: '600',
   },
-  securityTeam: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
+  securityCard: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 16,
     marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  securityTeamHeader: {
+  securityH: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    alignItems: 'center',
+    marginBottom: 12,
   },
-  securityTeamName: {
-    fontSize: 16,
+  securityName: {
+    fontSize: 17,
     fontWeight: 'bold',
+    color: '#111827',
+    marginBottom: 4,
   },
-  securityTeamMembers: {
+  securityMembers: {
     fontSize: 14,
     color: '#6B7280',
   },
@@ -1224,32 +1397,48 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#D1FAE5',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 12,
-    gap: 4,
+    gap: 6,
   },
   statusOffline: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#F3F4F6',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 12,
-    gap: 4,
+    gap: 6,
   },
   statusDot: {
-    fontSize: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#9CA3AF',
+  },
+  statusDotActive: {
+    backgroundColor: '#10B981',
+  },
+  statusLabel: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '600',
+    textTransform: 'capitalize',
+  },
+  statusLabelActive: {
+    color: '#047857',
   },
   callButton: {
-    backgroundColor: '#16A34A',
-    padding: 12,
-    borderRadius: 8,
+    backgroundColor: '#0F766E',
+    padding: 14,
+    borderRadius: 10,
     alignItems: 'center',
   },
   callButtonText: {
     color: 'white',
-    fontWeight: '600',
+    fontWeight: 'bold',
+    fontSize: 15,
   },
   modalOverlay: {
     flex: 1,
@@ -1258,8 +1447,8 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     backgroundColor: 'white',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     padding: 20,
     maxHeight: '90%',
   },
@@ -1267,31 +1456,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
-    paddingBottom: 12,
+    marginBottom: 24,
+    paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
   },
   modalTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: 'bold',
+    color: '#111827',
   },
   modalClose: {
-    fontSize: 24,
+    fontSize: 28,
     color: '#6B7280',
+    fontWeight: '300',
   },
   label: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
+    color: '#374151',
     marginBottom: 8,
-    marginTop: 12,
+    marginTop: 16,
   },
   input: {
     borderWidth: 1,
     borderColor: '#D1D5DB',
-    borderRadius: 8,
-    padding: 12,
+    borderRadius: 12,
+    padding: 14,
     fontSize: 16,
+    color: '#111827',
+    backgroundColor: '#F9FAFB',
   },
   textArea: {
     height: 100,
@@ -1299,74 +1493,118 @@ const styles = StyleSheet.create({
   },
   typeButtons: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
+    gap: 10,
+    marginBottom: 8,
   },
   typeButton: {
     flex: 1,
-    padding: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#D1D5DB',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#E5E7EB',
     alignItems: 'center',
+    backgroundColor: '#F9FAFB',
   },
-  typeButtonActive: {
-    backgroundColor: '#16A34A',
-    borderColor: '#16A34A',
+  typeButtonIcon: {
+    fontSize: 24,
+    marginBottom: 4,
   },
   typeButtonText: {
     fontSize: 12,
     textTransform: 'capitalize',
     color: '#6B7280',
+    fontWeight: '600',
   },
   typeButtonTextActive: {
     color: 'white',
-    fontWeight: 'bold',
   },
   submitButton: {
-    backgroundColor: '#16A34A',
+    backgroundColor: '#0F766E',
     padding: 16,
-    borderRadius: 8,
+    borderRadius: 12,
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 24,
     marginBottom: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   submitButtonText: {
     color: 'white',
     fontWeight: 'bold',
-    fontSize: 16,
+    fontSize: 17,
   },
   commentsScroll: {
     maxHeight: 400,
     marginBottom: 16,
   },
+  noCommentsContainer: {
+    paddingVertical: 40,
+    alignItems: 'center',
+  },
+  noCommentsIcon: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
   noComments: {
-    textAlign: 'center',
+    fontSize: 16,
+    color: '#6B7280',
+    fontWeight: '600',
+  },
+  noCommentsSubtext: {
+    fontSize: 14,
     color: '#9CA3AF',
-    padding: 40,
+    marginTop: 4,
   },
   commentCard: {
     backgroundColor: '#F9FAFB',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  commentHeader: {
+    flexDirection: 'row',
+    marginBottom: 10,
+  },
+  commentAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#0F766E',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  commentAvatarText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  commentInfo: {
+    flex: 1,
+    justifyContent: 'center',
   },
   commentUser: {
     fontWeight: 'bold',
-    color: '#16A34A',
-    marginBottom: 4,
-  },
-  commentText: {
-    color: '#374151',
-    marginBottom: 4,
+    color: '#111827',
+    fontSize: 15,
+    marginBottom: 2,
   },
   commentTime: {
     fontSize: 12,
     color: '#9CA3AF',
   },
+  commentText: {
+    color: '#374151',
+    fontSize: 15,
+    lineHeight: 21,
+  },
   commentInputContainer: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
     alignItems: 'flex-end',
   },
   commentInput: {
@@ -1375,36 +1613,41 @@ const styles = StyleSheet.create({
     borderColor: '#D1D5DB',
     borderRadius: 20,
     paddingHorizontal: 16,
-    paddingVertical: 8,
-    maxHeight: 100,
-  },
-  sendCommentBtn: {
-    backgroundColor: '#16A34A',
-    paddingHorizontal: 20,
     paddingVertical: 10,
+    maxHeight: 100,
+    fontSize: 15,
+    backgroundColor: '#F9FAFB',
+  },
+  sendButton: {
+    backgroundColor: '#0F766E',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
     borderRadius: 20,
   },
-  sendCommentText: {
+  sendButtonText: {
     color: 'white',
     fontWeight: 'bold',
+    fontSize: 15,
   },
   fab: {
     position: 'absolute',
-    bottom: 20,
-    right: 20,
-    backgroundColor: '#DC2626',
+    bottom: 24,
+    right: 24,
+    backgroundColor: '#21998fff',
     width: 60,
     height: 60,
-    borderRadius: 30,
+    borderRadius: 32,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 5,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 8,
   },
-  fabText: {
-    fontSize: 28,
+  fabIcon: {
+    fontSize: 30,
+    color: 'white',
+    fontWeight: '300',
   },
 });
