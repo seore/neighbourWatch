@@ -65,9 +65,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## 📱 Screenshots
 <div align="center">
   <img width="250" height="541" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 35" src="https://github.com/user-attachments/assets/e15c7757-be6b-476a-9163-bc5ce0efef2f" />
-  <img width="1206" height="2622" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 41" src="https://github.com/user-attachments/assets/7f706af5-201a-4fcb-b454-8cda47555bdf" />
-  <img width="1206" height="2622" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 48" src="https://github.com/user-attachments/assets/e139c842-d75e-4765-93b9-aa469d61f178" />
-  <img width="1206" height="2622" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 58" src="https://github.com/user-attachments/assets/54208fda-21c8-4027-9dd6-864b4c270836" />
+  <img width="250" height="541" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 41" src="https://github.com/user-attachments/assets/7f706af5-201a-4fcb-b454-8cda47555bdf" />
+  <img width="250" height="541" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 48" src="https://github.com/user-attachments/assets/e139c842-d75e-4765-93b9-aa469d61f178" />
+  <img width="250" height="541" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 58" src="https://github.com/user-attachments/assets/54208fda-21c8-4027-9dd6-864b4c270836" />
 </div>
 
 ## 📝 License
