@@ -18,6 +18,18 @@ A modern mobile security application for residential estates, enabling real-time
 - **UI Components**: React Native built-ins
 - **Styling**: StyleSheet API
 
+## 🚧 Roadmap
+- [ ] User authentication & profiles
+- [ ] Push notifications
+- [ ] Photo/video uploads for incidents
+- [ ] Search & filter alerts
+- [ ] Analytics dashboard for estate management
+- [ ] In-app messaging
+- [ ] Scheduled security patrols
+- [ ] Emergency alert broadcasts
+- [ ] Multi-estate support
+- [ ] Dark mode
+
 ## 🚀 Getting Started
 ### Installation
 
@@ -41,21 +53,6 @@ A modern mobile security application for residential estates, enabling real-time
    - Scan the QR code with Expo Go app
    - Or press `i` for iOS simulator / `a` for Android emulator
 
-## 📱 Screenshots
-<img width="1206" height="2622" alt="neighbourW" src="https://github.com/user-attachments/assets/79d37f01-8a67-480e-ad7f-c2f4e78b5698" />
-
-## 🚧 Roadmap
-- [ ] User authentication & profiles
-- [ ] Push notifications
-- [ ] Photo/video uploads for incidents
-- [ ] Search & filter alerts
-- [ ] Analytics dashboard for estate management
-- [ ] In-app messaging
-- [ ] Scheduled security patrols
-- [ ] Emergency alert broadcasts
-- [ ] Multi-estate support
-- [ ] Dark mode
-
 ## 🤝 Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
 
@@ -64,6 +61,12 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
+
+## 📱 Screenshots
+<img width="1206" height="2622" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 35" src="https://github.com/user-attachments/assets/e15c7757-be6b-476a-9163-bc5ce0efef2f" />
+<img width="1206" height="2622" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 41" src="https://github.com/user-attachments/assets/7f706af5-201a-4fcb-b454-8cda47555bdf" />
+<img width="1206" height="2622" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 48" src="https://github.com/user-attachments/assets/e139c842-d75e-4765-93b9-aa469d61f178" />
+<img width="1206" height="2622" alt="Simulator Screenshot - iPhone 16 Pro - 2026-01-10 at 00 13 58" src="https://github.com/user-attachments/assets/54208fda-21c8-4027-9dd6-864b4c270836" />
 
 ## 📝 License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
